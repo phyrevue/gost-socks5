@@ -135,11 +135,55 @@ install_dependencies() {
     log_info "安装必要的依赖..."
     
     if [[ "$PACKAGE_MANAGER" == "apt-get" ]]; then
-        apt-get update
-        apt-get install -y curl wget tar
+        # 尝试修复损坏的包
+        log_info "检查包管理器状态..."
+        dpkg --configure -a 2>/dev/null || true
+        
+        # 清理包缓存
+        apt-get clean
+        
+        # 尝试更新，忽略特定错误
+        log_info "更新包列表..."
+        apt-get update 2>&1 | while read line; do
+            if [[ ! "$line" =~ "bullseye-backports" ]]; then
+                echo "$line"
+            fi
+        done || true
+        
+        # 安装包，使用 --fix-missing 选项
+        log_info "安装必要的包..."
+        DEBIAN_FRONTEND=noninteractive apt-get install -y --fix-missing curl wget tar 2>&1 | \
+            grep -v "bullseye-backports" || {
+            log_warn "标准安装失败，尝试强制安装..."
+            # 尝试单独安装每个包
+            for pkg in curl wget tar; do
+                if ! command -v $pkg &> /dev/null; then
+                    DEBIAN_FRONTEND=noninteractive apt-get install -y --fix-missing $pkg || \
+                        log_warn "无法安装 $pkg，但继续执行..."
+                fi
+            done
+        }
     elif [[ "$PACKAGE_MANAGER" == "yum" ]]; then
         yum install -y curl wget tar
     fi
+    
+    # 检查关键命令
+    local missing_cmds=()
+    for cmd in wget curl; do
+        if ! command -v $cmd &> /dev/null; then
+            missing_cmds+=($cmd)
+        fi
+    done
+    
+    if [ ${#missing_cmds[@]} -eq 2 ]; then
+        log_error "缺少必要的下载工具: wget 和 curl"
+        log_info "请手动安装: apt-get install -y wget curl"
+        exit 1
+    elif [ ${#missing_cmds[@]} -eq 1 ]; then
+        log_warn "缺少 ${missing_cmds[0]}，将使用其他下载工具"
+    fi
+    
+    log_success "依赖检查完成"
 }
 
 # 下载和安装 Gost
